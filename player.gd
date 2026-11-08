@@ -1,22 +1,13 @@
 extends CharacterBody3D
 ## Игрок. Имя узла = id владельца. Двигает персонажа только владелец,
-## остальным позиция, поворот и id скина приходят через MultiplayerSynchronizer.
+## остальным позиция и поворот приходят через MultiplayerSynchronizer.
+## Скин (части модели) приходит отдельно через SkinNet.
 
 const SPEED := 6.0
 const GRAVITY := 25.0
 const TURN_SPEED := 12.0
-const SKIN_YAW := 0.0  # если скин смотрит назад, поставь 3.14159
-
-## id пользователя Roblox, чей аватар надет (0 = обычная капсула).
-## Синхронизируется всем игрокам: каждый скачивает аватар у Roblox сам.
-@export var skin_user_id: int = 0:
-	set(value):
-		skin_user_id = value
-		if is_node_ready():
-			_load_skin()
 
 var _controls: Node
-var _skin_generation := 0
 var _skin: Node3D
 var _pivots := {}
 var _last_pos := Vector3.ZERO
@@ -44,7 +35,11 @@ func _ready() -> void:
 		_controls = get_tree().get_first_node_in_group("touch_controls")
 	else:
 		_camera.queue_free()
-	if skin_user_id > 0:
+	# Серверу (без экрана) скины не нужны.
+	if DisplayServer.get_name() != "headless":
+		var net = get_tree().get_first_node_in_group("skin_net")
+		if net != null:
+			net.skin_ready.connect(_on_skin_ready)
 		_load_skin()
 
 
@@ -101,32 +96,30 @@ func _paint(id: int) -> void:
 	_mesh.material_override = material
 
 
+func _on_skin_ready(owner_id: int) -> void:
+	if owner_id == str(name).to_int():
+		_load_skin()
+
+
 func _load_skin() -> void:
-	# Серверу (без экрана) скин не нужен: он только пересылает id.
-	if skin_user_id <= 0 or DisplayServer.get_name() == "headless":
+	var net = get_tree().get_first_node_in_group("skin_net")
+	var importer = get_tree().get_first_node_in_group("skin_importer")
+	if net == null or importer == null:
 		return
-	_skin_generation += 1
-	var generation := _skin_generation
-	var loader = get_tree().get_first_node_in_group("avatar_loader")
-	if loader == null:
+	var pack: Dictionary = net.get_skin(str(name).to_int())
+	if pack.is_empty():
 		return
-	var avatar: Dictionary = await loader.get_avatar(skin_user_id)
-	# Пока качалось, скин могли сменить или игрок мог выйти.
-	if generation != _skin_generation or not is_inside_tree():
-		return
-	if avatar.is_empty():
-		return
-	_apply_skin(avatar)
+	var parts: Dictionary = importer.build_parts(pack)
+	_apply_skin(parts, float(pack.get("yaw", 0.0)))
 
 
-func _apply_skin(avatar: Dictionary) -> void:
+func _apply_skin(parts: Dictionary, yaw: float) -> void:
 	_clear_skin()
 	_skin = Node3D.new()
 	_skin.name = "Skin"
 	_skin.position = Vector3(0.0, -1.0, 0.0)  # ноги на уровне низа капсулы
-	_skin.rotation.y = SKIN_YAW
+	_skin.rotation.y = yaw
 	_body.add_child(_skin)
-	var parts: Dictionary = avatar["parts"]
 	for part_name in parts:
 		var info: Dictionary = parts[part_name]
 		var pivot_pos: Vector3 = info["pivot"]

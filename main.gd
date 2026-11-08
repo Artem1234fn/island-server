@@ -1,6 +1,6 @@
 extends Node3D
 ## Главная сцена.
-## Клиент: кнопка «Играть» подключает к общему серверу, панель «Скин» надевает аватар Roblox.
+## Клиент: кнопка «Играть» подключает к общему серверу, кнопка «Скин» загружает файл скина.
 ## Сервер (без экрана):
 ##   godot --headless --path <папка проекта> -- --server
 ## Порт сервер берёт из переменной окружения PORT (так делает Render), иначе 7777.
@@ -14,6 +14,7 @@ const DEFAULT_PORT := 7777
 const CONNECT_TOTAL_TIMEOUT := 100.0 # бесплатный сервер может просыпаться до минуты
 const ATTEMPT_TIMEOUT := 20.0
 const RETRY_DELAY := 3.0
+const MAX_SKIN_BYTES := 8 * 1024 * 1024
 const PLAYER_SCENE := preload("res://player.tscn")
 
 @onready var _players: Node3D = $Players
@@ -21,10 +22,11 @@ const PLAYER_SCENE := preload("res://player.tscn")
 @onready var _status: Label = $UI/StatusLabel
 @onready var _touch_controls: Control = $UI/TouchControls
 @onready var _skin_panel: Control = $UI/SkinPanel
-@onready var _skin_edit: LineEdit = $UI/SkinPanel/SkinEdit
 @onready var _skin_button: Button = $UI/SkinPanel/SkinButton
-@onready var _loader = $AvatarLoader
+@onready var _skin_net = $SkinNet
+@onready var _importer = $SkinImporter
 
+var _dialog: FileDialog
 var _connecting := false
 var _attempt := 0
 var _deadline_msec := 0
@@ -32,7 +34,7 @@ var _deadline_msec := 0
 
 func _ready() -> void:
 	$UI/Menu/PlayButton.pressed.connect(_on_play_pressed)
-	_skin_button.pressed.connect(_on_skin_pressed)
+	_skin_button.pressed.connect(_on_skin_button_pressed)
 
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
@@ -42,9 +44,19 @@ func _ready() -> void:
 
 	_show_game_ui(false)
 
-	# Режим выделенного сервера: игрока у сервера нет, меню не нужно.
+	# Режим выделенного сервера: игрока у сервера нет, меню и окно выбора файла не нужны.
 	if "--server" in OS.get_cmdline_user_args():
 		_start_server(false)
+		return
+
+	_dialog = FileDialog.new()
+	_dialog.title = "Выбери файл скина"
+	_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	_dialog.access = FileDialog.ACCESS_FILESYSTEM
+	_dialog.use_native_dialog = true
+	_dialog.filters = PackedStringArray(["*.glb, *.zip ; Скин (.glb или .zip)"])
+	_dialog.file_selected.connect(_on_skin_file_selected)
+	add_child(_dialog)
 
 
 func _show_game_ui(shown: bool) -> void:
@@ -64,10 +76,18 @@ func _on_play_pressed() -> void:
 	_try_connect()
 
 
+## Скины передаются кусками, поэтому буферы увеличены (если в этой версии Godot есть такие свойства).
+func _tune(peer: WebSocketMultiplayerPeer) -> void:
+	peer.set("inbound_buffer_size", 4194304)
+	peer.set("outbound_buffer_size", 4194304)
+	peer.set("max_queued_packets", 8192)
+
+
 func _try_connect() -> void:
 	_attempt += 1
 	var token := _attempt
 	var peer := WebSocketMultiplayerPeer.new()
+	_tune(peer)
 	var err := peer.create_client(SERVER_URL)
 	if err != OK:
 		_give_up("Не удалось начать подключение: %s" % error_string(err))
@@ -108,6 +128,7 @@ func _start_server(with_player: bool) -> bool:
 	if OS.has_environment("PORT"):
 		port = int(OS.get_environment("PORT"))
 	var peer := WebSocketMultiplayerPeer.new()
+	_tune(peer)
 	var err := peer.create_server(port)
 	if err != OK:
 		_set_status("Не удалось создать сервер: %s" % error_string(err))
@@ -148,6 +169,8 @@ func _on_connected_to_server() -> void:
 	_attempt += 1
 	_show_game_ui(true)
 	_set_status("Ты на острове! Твой id: %d" % multiplayer.get_unique_id())
+	# Просим у сервера скины тех, кто уже на острове.
+	_skin_net.request_all()
 
 
 func _on_server_disconnected() -> void:
@@ -161,32 +184,30 @@ func _on_server_disconnected() -> void:
 	_set_status("Связь с сервером потеряна.")
 
 
-## Кнопка «Скин»: по нику находим id в Roblox, заранее качаем аватар и только потом
-## сообщаем id всем игрокам (каждый скачает аватар у Roblox сам).
-func _on_skin_pressed() -> void:
-	var username := _skin_edit.text.strip_edges()
-	if username.is_empty():
-		_set_status("Введи ник Roblox")
-		return
-	var me := _players.get_node_or_null(str(multiplayer.get_unique_id()))
-	if me == null:
-		_set_status("Сначала зайди на остров")
-		return
+func _on_skin_button_pressed() -> void:
+	if _dialog != null:
+		_dialog.popup_centered_ratio(0.9)
+
+
+## Файл скина выбран: разбираем его, надеваем на себя и отправляем остальным игрокам.
+func _on_skin_file_selected(path: String) -> void:
 	_skin_button.disabled = true
-	_set_status("Ищу игрока %s…" % username)
-	var user_id: int = await _loader.resolve_user_id(username)
-	if user_id <= 0:
-		_set_status(_loader.last_error)
+	_set_status("Читаю файл скина…")
+	var pack: Dictionary = await _importer.import_file(path)
+	if pack.is_empty():
+		_set_status("Скин не загружен: " + _importer.last_error)
 		_skin_button.disabled = false
 		return
-	_set_status("Скачиваю аватар, это может занять до минуты…")
-	var avatar: Dictionary = await _loader.get_avatar(user_id)
-	_skin_button.disabled = false
-	if avatar.is_empty():
-		_set_status("Не получилось загрузить аватар: " + _loader.last_error)
+	var data: PackedByteArray = _importer.pack_to_bytes(pack)
+	var megabytes := data.size() / 1048576.0
+	if data.size() > MAX_SKIN_BYTES:
+		_set_status("Скин слишком тяжёлый: %.1f МБ после сжатия, максимум 8 МБ. Возьми модель попроще." % megabytes)
+		_skin_button.disabled = false
 		return
-	me.skin_user_id = user_id
+	_set_status("Отправляю скин другим игрокам (%.1f МБ)…" % megabytes)
+	await _skin_net.submit(multiplayer.get_unique_id(), pack, data)
 	_set_status("Скин применён")
+	_skin_button.disabled = false
 
 
 func _set_status(message: String) -> void:
