@@ -17,6 +17,11 @@ const CAM_PITCH_MIN := -0.9       # камера может опуститься
 const CAM_PITCH_MAX := 1.2        # максимальный наклон (почти сверху)
 const LOOK_SENSITIVITY := 0.0055  # радиан на один пиксель сдвига пальца
 const FALL_LIMIT := -40.0         # ниже этой высоты игрок возвращается на остров
+const BUBBLE_HEIGHT := 2.35       # высота пузыря над центром капсулы (над ником)
+const BUBBLE_SECONDS := 6.0       # сколько секунд пузырь висит над головой
+const BUBBLE_FADE := 1.0          # последнюю секунду пузырь плавно гаснет
+const BUBBLE_MAX_CHARS := 140     # длинные сообщения в пузыре обрезаются
+const BUBBLE_PAD := Vector2(0.35, 0.2)  # поля вокруг текста
 
 var _controls: Node
 var _skin: Node3D
@@ -28,6 +33,9 @@ var _cam_yaw := 0.0
 var _cam_pitch := 0.35
 var _cam_distance := CAM_DISTANCE
 var _cam_focus := Vector3.ZERO
+var _bubble: Label3D
+var _bubble_bg: MeshInstance3D
+var _bubble_time := 0.0
 
 @onready var _body: Node3D = $Body
 @onready var _mesh: MeshInstance3D = $Body/Mesh
@@ -58,9 +66,11 @@ func _ready() -> void:
 		var net = get_tree().get_first_node_in_group("skin_net")
 		if net != null:
 			net.skin_ready.connect(_on_skin_ready)
+		_make_bubble()
 		var chat = get_tree().get_first_node_in_group("chat_net")
 		if chat != null:
 			chat.nick_changed.connect(_on_nick_changed)
+			chat.message_received.connect(_on_chat_message)
 		_load_skin()
 
 
@@ -97,6 +107,15 @@ func _physics_process(delta: float) -> void:
 ## Камера обновляется каждый кадр, а анимация ходьбы (как у R6: ноги и руки качаются в
 ## противофазе) работает у всех игроков: скорость берётся из того, как меняется позиция.
 func _process(delta: float) -> void:
+	if _bubble_time > 0.0:
+		_bubble_time -= delta
+		if _bubble_time <= 0.0:
+			_bubble.visible = false
+			_bubble_bg.visible = false
+		else:
+			var alpha := clampf(_bubble_time / BUBBLE_FADE, 0.0, 1.0)
+			_bubble.modulate.a = alpha
+			_bubble_bg.transparency = 1.0 - alpha
 	if is_multiplayer_authority():
 		_update_camera(delta)
 	if _pivots.is_empty():
@@ -184,6 +203,68 @@ func _update_label() -> void:
 	if chat != null:
 		nick = chat.get_nick(str(name).to_int())
 	_name_label.text = nick if nick != "" else "Игрок " + str(name)
+
+
+## Пузырь с текстом над головой: тёмный текст на светлой плашке, всегда повёрнут к камере.
+func _make_bubble() -> void:
+	_bubble = Label3D.new()
+	_bubble.name = "ChatBubble"
+	_bubble.position = Vector3(0.0, BUBBLE_HEIGHT, 0.0)
+	_bubble.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	_bubble.pixel_size = 0.0125
+	_bubble.font_size = 36
+	_bubble.outline_size = 0
+	_bubble.width = 300.0
+	_bubble.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_bubble.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
+	_bubble.modulate = Color(0.08, 0.08, 0.1, 1.0)
+	_bubble.no_depth_test = true
+	_bubble.render_priority = 1
+	_bubble.visible = false
+	add_child(_bubble)
+
+	var material := StandardMaterial3D.new()
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	material.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	material.no_depth_test = true
+	material.albedo_color = Color(1.0, 1.0, 1.0, 0.92)
+	_bubble_bg = MeshInstance3D.new()
+	_bubble_bg.name = "ChatBubbleBackground"
+	_bubble_bg.position = Vector3(0.0, BUBBLE_HEIGHT, 0.0)
+	_bubble_bg.mesh = QuadMesh.new()
+	_bubble_bg.material_override = material
+	_bubble_bg.visible = false
+	add_child(_bubble_bg)
+
+
+func _on_chat_message(sender_id: int, _nick: String, text: String) -> void:
+	if sender_id == str(name).to_int() and _bubble != null:
+		_show_bubble(text)
+
+
+func _show_bubble(text: String) -> void:
+	var shown := text
+	if shown.length() > BUBBLE_MAX_CHARS:
+		shown = shown.substr(0, BUBBLE_MAX_CHARS) + "…"
+	_bubble.text = shown
+	_bubble.modulate.a = 1.0
+	_bubble.visible = true
+	_bubble_bg.visible = false
+	_bubble_bg.transparency = 0.0
+	_bubble_time = BUBBLE_SECONDS
+	# Label3D пересчитывает размер текста на следующем кадре, плашку подгоняем под него.
+	await get_tree().process_frame
+	if _bubble_time <= 0.0:
+		return
+	var box := _bubble.get_aabb()
+	if box.size.x <= 0.0 or box.size.y <= 0.0:
+		return
+	var quad := _bubble_bg.mesh as QuadMesh
+	quad.size = Vector2(box.size.x + BUBBLE_PAD.x, box.size.y + BUBBLE_PAD.y)
+	quad.center_offset = Vector3(box.position.x + box.size.x * 0.5, box.position.y + box.size.y * 0.5, -0.02)
+	_bubble_bg.visible = true
 
 
 func _on_nick_changed(peer_id: int) -> void:
