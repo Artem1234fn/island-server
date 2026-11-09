@@ -527,16 +527,17 @@ func _make_pack(source: Dictionary) -> Dictionary:
 ## ноги на y = 0, высота SKIN_HEIGHT, центр по x = 0.
 func _classify(c: Vector3) -> String:
 	var s := SKIN_HEIGHT
+	# Голова (и руки, поднятые выше плеч).
 	if c.y >= 0.80 * s:
 		if absf(c.x) > 0.30 * s:
 			return "arm_r" if c.x > 0.0 else "arm_l"
 		return "head"
+	# Всё, что снаружи от торса и ног, это руки. У моделей Roblox руки длинные и кисти
+	# свисают ниже пояса, поэтому границу рук ведём почти до стоп.
+	if absf(c.x) > 0.20 * s and c.y >= 0.15 * s:
+		return "arm_r" if c.x > 0.0 else "arm_l"
 	if c.y < 0.40 * s:
 		return "leg_r" if c.x >= 0.0 else "leg_l"
-	if c.x > 0.20 * s:
-		return "arm_r"
-	if c.x < -0.20 * s:
-		return "arm_l"
 	return "torso"
 
 
