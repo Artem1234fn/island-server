@@ -22,6 +22,10 @@ const BUBBLE_SECONDS := 6.0       # сколько секунд пузырь в�
 const BUBBLE_FADE := 1.0          # последнюю секунду пузырь плавно гаснет
 const BUBBLE_MAX_CHARS := 140     # длинные сообщения в пузыре обрезаются
 const BUBBLE_PAD := Vector2(0.35, 0.2)  # поля вокруг текста
+const VOICE_RATE := 16000.0       # частота голоса (как в voice_net.gd)
+const VOICE_UNIT_SIZE := 12.0     # до этого расстояния голос слышен в полную силу, дальше тише
+const VOICE_PREROLL := 3          # сколько кусочков (по 40 мс) копим перед началом речи
+const VOICE_MAX_QUEUE := 12       # если накопилось больше, старое выбрасываем
 
 var _controls: Node
 var _skin: Node3D
@@ -36,6 +40,13 @@ var _cam_focus := Vector3.ZERO
 var _bubble: Label3D
 var _bubble_bg: MeshInstance3D
 var _bubble_time := 0.0
+var _voice_net: Node
+var _voice_player: AudioStreamPlayer3D
+var _voice_playback: AudioStreamGeneratorPlayback
+var _voice_queue: Array[PackedFloat32Array] = []
+var _voice_active := false
+var _voice_idle := 0.0
+var _speaking := 0.0
 
 @onready var _body: Node3D = $Body
 @onready var _mesh: MeshInstance3D = $Body/Mesh
@@ -67,6 +78,11 @@ func _ready() -> void:
 		if net != null:
 			net.skin_ready.connect(_on_skin_ready)
 		_make_bubble()
+		_voice_net = get_tree().get_first_node_in_group("voice_net")
+		if _voice_net != null:
+			_voice_net.voice_received.connect(_on_voice_received)
+		if not is_multiplayer_authority():
+			_make_voice_player()
 		var chat = get_tree().get_first_node_in_group("chat_net")
 		if chat != null:
 			chat.nick_changed.connect(_on_nick_changed)
@@ -107,6 +123,7 @@ func _physics_process(delta: float) -> void:
 ## Камера обновляется каждый кадр, а анимация ходьбы (как у R6: ноги и руки качаются в
 ## противофазе) работает у всех игроков: скорость берётся из того, как меняется позиция.
 func _process(delta: float) -> void:
+	_update_voice(delta)
 	if _bubble_time > 0.0:
 		_bubble_time -= delta
 		if _bubble_time <= 0.0:
@@ -265,6 +282,71 @@ func _show_bubble(text: String) -> void:
 	quad.size = Vector2(box.size.x + BUBBLE_PAD.x, box.size.y + BUBBLE_PAD.y)
 	quad.center_offset = Vector3(box.position.x + box.size.x * 0.5, box.position.y + box.size.y * 0.5, -0.02)
 	_bubble_bg.visible = true
+
+
+## Голос другого игрока звучит из его позиции: чем дальше, тем тише.
+func _make_voice_player() -> void:
+	var generator := AudioStreamGenerator.new()
+	generator.mix_rate = VOICE_RATE
+	generator.set("mix_rate_mode", 2)  # своя частота, а не частота вывода
+	generator.buffer_length = 0.4
+	_voice_player = AudioStreamPlayer3D.new()
+	_voice_player.name = "Voice"
+	_voice_player.position = Vector3(0.0, 1.5, 0.0)
+	_voice_player.unit_size = VOICE_UNIT_SIZE
+	_voice_player.stream = generator
+	add_child(_voice_player)
+	_voice_player.play()
+	_voice_playback = _voice_player.get_stream_playback() as AudioStreamGeneratorPlayback
+
+
+func _on_voice_received(owner_id: int, samples: PackedFloat32Array) -> void:
+	if owner_id != str(name).to_int() or _voice_playback == null:
+		return
+	_voice_queue.append(samples)
+	_speaking = 0.5
+	while _voice_queue.size() > VOICE_MAX_QUEUE:
+		_voice_queue.pop_front()
+
+
+## Ник подсвечивается зелёным, пока игрок говорит; чужой голос подаётся в проигрыватель.
+func _update_voice(delta: float) -> void:
+	var speaking_now := false
+	if is_multiplayer_authority():
+		if _voice_net != null:
+			speaking_now = _voice_net.local_speaking
+	else:
+		_speaking = maxf(_speaking - delta, 0.0)
+		speaking_now = _speaking > 0.0
+		_feed_voice(delta)
+	_name_label.modulate = Color(0.45, 1.0, 0.45) if speaking_now else Color.WHITE
+
+
+func _feed_voice(delta: float) -> void:
+	if _voice_playback == null:
+		return
+	# Речь начинаем, когда накоплено немного звука: запас на неровную доставку.
+	if not _voice_active:
+		if _voice_queue.size() < VOICE_PREROLL:
+			return
+		_voice_active = true
+	while not _voice_queue.is_empty():
+		var chunk: PackedFloat32Array = _voice_queue[0]
+		if _voice_playback.get_frames_available() < chunk.size():
+			break
+		_voice_queue.pop_front()
+		var frames := PackedVector2Array()
+		frames.resize(chunk.size())
+		for i in chunk.size():
+			frames[i] = Vector2(chunk[i], chunk[i])
+		_voice_playback.push_buffer(frames)
+	if _voice_queue.is_empty():
+		_voice_idle += delta
+		if _voice_idle > 0.4:
+			_voice_active = false  # речь закончилась: в следующий раз снова накопим запас
+			_voice_idle = 0.0
+	else:
+		_voice_idle = 0.0
 
 
 func _on_nick_changed(peer_id: int) -> void:

@@ -5,6 +5,7 @@
 [ext_resource type="Script" path="res://skin_importer.gd" id="3_importer"]
 [ext_resource type="Script" path="res://skin_net.gd" id="4_net"]
 [ext_resource type="Script" path="res://chat_net.gd" id="5_chat"]
+[ext_resource type="Script" path="res://voice_net.gd" id="6_voice"]
 
 [sub_resource type="Environment" id="Environment_sky"]
 background_mode = 1
@@ -67,6 +68,9 @@ script = ExtResource("4_net")
 [node name="ChatNet" type="Node" parent="."]
 script = ExtResource("5_chat")
 
+[node name="VoiceNet" type="Node" parent="."]
+script = ExtResource("6_voice")
+
 [node name="UI" type="CanvasLayer" parent="."]
 
 [node name="TouchControls" type="Control" parent="UI"]
@@ -82,7 +86,7 @@ script = ExtResource("2_touch")
 [node name="StatusLabel" type="Label" parent="UI"]
 offset_left = 24.0
 offset_top = 16.0
-offset_right = 860.0
+offset_right = 740.0
 offset_bottom = 60.0
 theme_override_font_sizes/font_size = 26
 text = "Введи ник, выбери скин (по желанию) и нажми «Играть»"
@@ -136,7 +140,7 @@ layout_mode = 3
 anchors_preset = 1
 anchor_left = 1.0
 anchor_right = 1.0
-offset_left = -400.0
+offset_left = -540.0
 offset_top = 16.0
 offset_right = -16.0
 offset_bottom = 80.0
@@ -149,6 +153,13 @@ layout_mode = 2
 size_flags_horizontal = 3
 theme_override_font_sizes/font_size = 24
 text = "Чат"
+
+[node name="MicButton" type="Button" parent="UI/GamePanel"]
+custom_minimum_size = Vector2(0, 64)
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 24
+text = "Микр: выкл"
 
 [node name="ExitButton" type="Button" parent="UI/GamePanel"]
 custom_minimum_size = Vector2(0, 64)

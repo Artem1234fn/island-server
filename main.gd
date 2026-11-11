@@ -32,6 +32,7 @@ const PLAYER_SCENE := preload("res://player.tscn")
 @onready var _game_panel: Control = $UI/GamePanel
 @onready var _chat_button: Button = $UI/GamePanel/ChatButton
 @onready var _exit_button: Button = $UI/GamePanel/ExitButton
+@onready var _mic_button: Button = $UI/GamePanel/MicButton
 @onready var _chat_panel: Control = $UI/ChatPanel
 @onready var _chat_log_panel: Control = $UI/ChatPanel/LogPanel
 @onready var _chat_log: Label = $UI/ChatPanel/LogPanel/ChatLog
@@ -40,6 +41,7 @@ const PLAYER_SCENE := preload("res://player.tscn")
 @onready var _send_button: Button = $UI/ChatPanel/ChatRow/SendButton
 @onready var _skin_net = $SkinNet
 @onready var _chat_net = $ChatNet
+@onready var _voice_net = $VoiceNet
 @onready var _importer = $SkinImporter
 
 var _dialog: FileDialog
@@ -61,6 +63,8 @@ func _ready() -> void:
 	_send_button.pressed.connect(_on_chat_send_pressed)
 	_chat_input.text_submitted.connect(_on_chat_submitted)
 	_chat_net.message_received.connect(_on_chat_message)
+	_mic_button.pressed.connect(_on_mic_pressed)
+	_voice_net.mic_state_changed.connect(_on_mic_state)
 
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
@@ -101,6 +105,7 @@ func _show_game_ui(shown: bool) -> void:
 	_chat_panel.visible = shown
 	if not shown:
 		_close_chat_input()
+		_voice_net.set_mic_enabled(false)
 		_chat_lines.clear()
 		_chat_log.text = ""
 		_chat_log_panel.hide()
@@ -165,6 +170,18 @@ func _on_chat_message(sender_id: int, nick: String, text: String) -> void:
 	_chat_log.text = "\n".join(_chat_lines)
 	_chat_log_panel.show()
 	_chat_idle = CHAT_FADE_SECONDS
+
+
+# ---------- голос ----------
+
+func _on_mic_pressed() -> void:
+	_voice_net.set_mic_enabled(not _voice_net.mic_enabled)
+
+
+func _on_mic_state(enabled: bool, message: String) -> void:
+	_mic_button.text = "Микр: вкл" if enabled else "Микр: выкл"
+	if message != "":
+		_set_status(message)
 
 
 # ---------- скин (до подключения) ----------

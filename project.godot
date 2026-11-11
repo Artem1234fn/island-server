@@ -25,3 +25,7 @@ window/handheld/orientation=4
 [rendering]
 
 renderer/rendering_method="mobile"
+
+[audio]
+
+driver/enable_input=true
